@@ -96,3 +96,37 @@ void
   va_end (args);
 #endif  /* HAVE_SYSPROF */
 }
+
+guint
+(g_trace_define_int_counter) (const char *name,
+                              const char *description)
+{
+#ifdef HAVE_SYSPROF
+  SysprofCaptureCounter counter;
+
+  counter.id = sysprof_collector_request_counters (1);
+  counter.type = SYSPROF_CAPTURE_COUNTER_INT64;
+  counter.value.v64 = 0;
+  g_strlcpy (counter.category, "GLib", sizeof counter.category);
+  g_strlcpy (counter.name, name, sizeof counter.name);
+  g_strlcpy (counter.description, description, sizeof counter.name);
+
+  sysprof_collector_define_counters (&counter, 1);
+
+  return counter.id;
+#else
+  return 0;
+#endif
+}
+
+void
+(g_trace_set_int_counter) (guint  id,
+                           gint64 val)
+{
+#ifdef HAVE_SYSPROF
+  SysprofCaptureCounterValue value;
+
+  value.v64 = val;
+  sysprof_collector_set_counters (&id, &value, 1);
+#endif
+}
