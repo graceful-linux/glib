@@ -506,13 +506,11 @@ out:
 }
 
 static GBytes*
-zone_info_unix (const gchar  *identifier,
-                gchar       **out_identifier)
+zone_info_unix (const gchar *identifier)
 {
   gchar *filename;
   GMappedFile *file = NULL;
   GBytes *zoneinfo = NULL;
-  gchar *resolved_identifier = NULL;
   const gchar *tzdir;
 
   tzdir = g_getenv ("TZDIR");
@@ -525,8 +523,6 @@ zone_info_unix (const gchar  *identifier,
      glibc allows both syntaxes, so we should too */
   if (identifier != NULL)
     {
-      resolved_identifier = g_strdup (identifier);
-
       if (*identifier == ':')
         identifier ++;
 
@@ -536,10 +532,7 @@ zone_info_unix (const gchar  *identifier,
         filename = g_build_filename (tzdir, identifier, NULL);
     }
   else
-    {
-      filename = g_strdup ("/etc/localtime");
-      resolved_identifier = zone_identifier_unix ();
-    }
+    filename = g_strdup ("/etc/localtime");
 
   file = g_mapped_file_new (filename, FALSE, NULL);
   if (file != NULL)
@@ -551,12 +544,6 @@ zone_info_unix (const gchar  *identifier,
       g_mapped_file_unref (file);
     }
 
-  g_assert (resolved_identifier != NULL);
-
-  if (out_identifier != NULL)
-    *out_identifier = g_steal_pointer (&resolved_identifier);
-
-  g_free (resolved_identifier);
   g_free (filename);
 
   return zoneinfo;
@@ -828,14 +815,11 @@ register_tzi_to_tzi (RegTZI *reg, TIME_ZONE_INFORMATION *tzi)
 
 static guint
 rules_from_windows_time_zone (const gchar   *identifier,
-                              gchar        **out_identifier,
-                              TimeZoneRule **rules,
-                              gboolean       copy_identifier)
+                              TimeZoneRule **rules)
 {
   HKEY key;
   gchar *subkey = NULL;
   gchar *subkey_dynamic = NULL;
-  gchar *key_name = NULL;
   const gchar *reg_key =
     "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\";
   TIME_ZONE_INFORMATION tzi;
@@ -850,24 +834,14 @@ rules_from_windows_time_zone (const gchar   *identifier,
   if (GetSystemDirectoryW (winsyspath, MAX_PATH) == 0)
     return 0;
 
-  g_assert (copy_identifier == FALSE || out_identifier != NULL);
   g_assert (rules != NULL);
 
-  if (copy_identifier)
-    *out_identifier = NULL;
-
   *rules = NULL;
-  key_name = NULL;
 
   if (!identifier)
-    key_name = windows_default_tzname ();
-  else
-    key_name = g_strdup (identifier);
-
-  if (!key_name)
     return 0;
 
-  subkey = g_strconcat (reg_key, key_name, NULL);
+  subkey = g_strconcat (reg_key, identifier, NULL);
   subkey_w = g_utf8_to_utf16 (subkey, -1, NULL, NULL, NULL);
   if (subkey_w == NULL)
     goto utf16_conv_failed;
@@ -1005,15 +979,8 @@ utf16_conv_failed:
       else
         (*rules)[rules_num - 1].start_year = (*rules)[rules_num - 2].start_year + 1;
 
-      if (copy_identifier)
-        *out_identifier = g_steal_pointer (&key_name);
-      else
-        g_free (key_name);
-
       return rules_num;
     }
-
-  g_free (key_name);
 
   return 0;
 }
@@ -1515,16 +1482,13 @@ parse_identifier_boundaries (gchar **pos, TimeZoneRule *tzr)
  */
 static guint
 rules_from_identifier (const gchar   *identifier,
-                       gchar        **out_identifier,
                        TimeZoneRule **rules)
 {
   gchar *pos;
   TimeZoneRule tzr;
 
-  g_assert (out_identifier != NULL);
   g_assert (rules != NULL);
 
-  *out_identifier = NULL;
   *rules = NULL;
 
   if (!identifier)
@@ -1539,7 +1503,6 @@ rules_from_identifier (const gchar   *identifier,
 
   if (*pos == 0)
     {
-      *out_identifier = g_strdup (identifier);
       return create_ruleset_from_rule (rules, &tzr);
     }
 
@@ -1559,15 +1522,8 @@ rules_from_identifier (const gchar   *identifier,
 
       /* Use US rules, Windows' default is Pacific Standard Time */
       if ((rules_num = rules_from_windows_time_zone ("Pacific Standard Time",
-                                                     NULL,
-                                                     rules,
-                                                     FALSE)))
+                                                     rules)))
         {
-          /* We don't want to hardcode our identifier here as
-           * "Pacific Standard Time", use what was passed in
-           */
-          *out_identifier = g_strdup (identifier);
-
           for (i = 0; i < rules_num - 1; i++)
             {
               (*rules)[i].std_offset = - tzr.std_offset;
@@ -1588,7 +1544,6 @@ rules_from_identifier (const gchar   *identifier,
   if (!parse_identifier_boundaries (&pos, &tzr))
     return 0;
 
-  *out_identifier = g_strdup (identifier);
   return create_ruleset_from_rule (rules, &tzr);
 }
 
@@ -1599,17 +1554,13 @@ parse_footertz (const gchar *footer, size_t footerlen)
   gchar *tzstring = g_strndup (footer + 1, footerlen - 2);
   GTimeZone *footertz = NULL;
 
-  /* FIXME: it might make sense to modify rules_from_identifier to
-     allow NULL to be passed instead of &ident, saving the strdup/free
-     pair.  The allocation for tzstring could also be avoided by
+  /* FIXME: The allocation for tzstring could be avoided by
      passing a gsize identifier_len argument to rules_from_identifier
      and changing the code in that function to stop assuming that
      identifier is nul-terminated.  */
-  gchar *ident;
   TimeZoneRule *rules;
-  guint rules_num = rules_from_identifier (tzstring, &ident, &rules);
+  guint rules_num = rules_from_identifier (tzstring, &rules);
 
-  g_free (ident);
   g_free (tzstring);
   if (rules_num > 1)
     {
@@ -1708,6 +1659,17 @@ g_time_zone_new (const gchar *identifier)
   if (time_zones == NULL)
     time_zones = g_hash_table_new (g_str_hash, g_str_equal);
 
+  if (identifier != NULL)
+    resolved_identifier = g_strdup (identifier);
+  else
+    {
+#ifdef G_OS_UNIX
+      resolved_identifier = zone_identifier_unix ();
+#elif defined (G_OS_WIN32)
+      resolved_identifier = windows_default_tzname ();
+#endif
+    }
+
   if (identifier)
     {
       tz = g_hash_table_lookup (time_zones, identifier);
@@ -1715,6 +1677,7 @@ g_time_zone_new (const gchar *identifier)
         {
           g_atomic_int_inc (&tz->ref_count);
           G_UNLOCK (time_zones);
+          g_free (resolved_identifier);
           return tz;
         }
     }
@@ -1725,26 +1688,23 @@ g_time_zone_new (const gchar *identifier)
   zone_for_constant_offset (tz, identifier);
 
   if (tz->t_info == NULL &&
-      (rules_num = rules_from_identifier (identifier, &resolved_identifier, &rules)))
+      (rules_num = rules_from_identifier (identifier, &rules)))
     {
-      init_zone_from_rules (tz, rules, rules_num, g_steal_pointer (&resolved_identifier));
+      init_zone_from_rules (tz, rules, rules_num, g_strdup (identifier));
       g_free (rules);
     }
 
   if (tz->t_info == NULL)
     {
 #ifdef G_OS_UNIX
-      GBytes *zoneinfo = zone_info_unix (identifier, &resolved_identifier);
+      GBytes *zoneinfo = zone_info_unix (identifier);
       if (zoneinfo != NULL)
         {
           init_zone_from_iana_info (tz, zoneinfo, g_steal_pointer (&resolved_identifier));
           g_bytes_unref (zoneinfo);
         }
 #elif defined (G_OS_WIN32)
-      if ((rules_num = rules_from_windows_time_zone (identifier,
-                                                     &resolved_identifier,
-                                                     &rules,
-                                                     TRUE)))
+      if ((rules_num = rules_from_windows_time_zone (resolved_identifier, &rules)))
         {
           init_zone_from_rules (tz, rules, rules_num, g_steal_pointer (&resolved_identifier));
           g_free (rules);
@@ -1771,7 +1731,7 @@ g_time_zone_new (const gchar *identifier)
                   rules[0].start_year = MIN_TZYEAR;
                   rules[1].start_year = MAX_TZYEAR;
 
-                  init_zone_from_rules (tz, rules, 2, windows_default_tzname ());
+                  init_zone_from_rules (tz, rules, 2, resolved_identifier);
                 }
 
               g_free (rules);
