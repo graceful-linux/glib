@@ -1670,9 +1670,9 @@ g_time_zone_new (const gchar *identifier)
 #endif
     }
 
-  if (identifier)
+  if (resolved_identifier)
     {
-      tz = g_hash_table_lookup (time_zones, identifier);
+      tz = g_hash_table_lookup (time_zones, resolved_identifier);
       if (tz)
         {
           g_atomic_int_inc (&tz->ref_count);
